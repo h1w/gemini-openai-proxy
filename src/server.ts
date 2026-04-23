@@ -1,9 +1,16 @@
 import http from 'http';
 import { sendChat, sendChatStream, listModels } from './chatwrapper';
-import { mapRequest, mapResponse, mapStreamChunk } from './mapper';
+import { mapRequest, mapResponse, mapStreamChunks, makeStreamState } from './mapper';
 
 /* ── basic config ─────────────────────────────────────────────────── */
 const PORT = Number(process.env.PORT ?? 11434);
+
+process.on('unhandledRejection', (reason) => {
+  console.error('unhandledRejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException:', err);
+});
 
 /* ── CORS helper ──────────────────────────────────────────────────── */
 function allowCors(res: http.ServerResponse) {
@@ -13,21 +20,19 @@ function allowCors(res: http.ServerResponse) {
 }
 
 /* ── JSON body helper ─────────────────────────────────────────────── */
-function readJSON(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): Promise<any | null> {
+function readJSON(req: http.IncomingMessage): Promise<any | null> {
   return new Promise((resolve) => {
     let data = '';
     req.on('data', (c) => (data += c));
     req.on('end', () => {
+      if (!data) { resolve({}); return; }
       try {
-        resolve(data ? JSON.parse(data) : {});
+        resolve(JSON.parse(data));
       } catch {
-        res.writeHead(400).end(); // malformed JSON
         resolve(null);
       }
     });
+    req.on('error', () => resolve(null));
   });
 }
 
@@ -57,16 +62,16 @@ http
 
     /* ---- /v1/chat/completions ---- */
     if (req.url === '/v1/chat/completions' && req.method === 'POST') {
-      const body = await readJSON(req, res);
+      const body = await readJSON(req);
       if (!body) {
-        res.writeHead(400).end();
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Malformed JSON body' } }));
         console.log('HTTP 400 Proxy error: malformed JSON');
-
         return;
       }
 
       try {
-        const { geminiReq, tools } = await mapRequest(body);
+        const { geminiReq } = await mapRequest(body);
 
         if (body.stream) {
           res.writeHead(200, {
@@ -77,14 +82,17 @@ http
 
           console.log('➜ sending HTTP 200 streamed response');
 
-          for await (const chunk of sendChatStream({ ...geminiReq, tools })) {
-            res.write(`data: ${JSON.stringify(mapStreamChunk(chunk))}\n\n`);
+          const state = makeStreamState();
+          for await (const chunk of sendChatStream(geminiReq)) {
+            for (const out of mapStreamChunks(chunk, state)) {
+              res.write(`data: ${JSON.stringify(out)}\n\n`);
+            }
           }
           res.end('data: [DONE]\n\n');
 
           console.log('➜ done sending streamed response');
         } else {
-          const gResp = await sendChat({ ...geminiReq, tools });
+          const gResp = await sendChat(geminiReq);
           const mapped = mapResponse(gResp);
           const code = 200;
           res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -94,8 +102,17 @@ http
         }
       } catch (err: any) {
         console.error('HTTP 500 Proxy error ➜', err);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: err.message } }));
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: err?.message ?? String(err) } }));
+        } else {
+          try {
+            res.write(
+              `data: ${JSON.stringify({ error: { message: err?.message ?? String(err) } })}\n\n`,
+            );
+            res.end('data: [DONE]\n\n');
+          } catch { /* socket already closed */ }
+        }
       }
 
       return;

@@ -9,11 +9,11 @@ Plug-and-play with clients that already speak OpenAI like SillyTavern, llama.cpp
 
 | ✔ | Feature | Notes |
 |---|---------|-------|
-| `/v1/chat/completions` | Non-stream & stream (SSE) | Works with curl, ST, LangChain… |
+| `/v1/chat/completions` | Non-stream & stream (SSE) | Works with curl, ST, LangChain, Cline, OpenClaw… |
+| Multi-turn history | `system` / `user` / `assistant` / `tool` roles | system → Gemini `systemInstruction` |
 | Vision support | `image_url` → Gemini `inlineData` | |
-| Function / Tool calling | OpenAI “functions” → Gemini Tool Registry | |
-| Reasoning / chain-of-thought | Sends `enable_thoughts:true`, streams `<think>` chunks | ST shows grey bubbles |
-| 1 M-token context | Proxy auto-lifts Gemini CLI’s default 200 k cap | |
+| Function / Tool calling | OpenAI `tools` + `tool_choice` → Gemini `functionDeclarations` / `toolConfig`; replies emit `tool_calls` | MCP-compatible clients work end-to-end |
+| Reasoning / chain-of-thought | `thinkingConfig.includeThoughts`, streams `<think>` chunks | ST shows grey bubbles |
 | CORS | Enabled (`*`) by default | Ready for browser apps |
 
 ---

@@ -22,17 +22,10 @@ if (model) {
 /* ------------------------------------------------------------------ */
 let modelName: string;
 const generatorPromise = (async () => {
-  // For AUTH_TYPE='oauth-personal': run our own OAuth flow on a fixed port
-  // so it works inside Docker. No-op if credentials are already cached or
-  // if a different auth type is in use.
   await ensureOauthCredentials();
 
-  // Pass undefined for model so the helper falls back to DEFAULT_GEMINI_MODEL
-  const cfg = await createContentGeneratorConfig(
-    model, // let default model be used
-    authTypeEnum
-  );
-  modelName = cfg.model;           // remember the actual model string
+  const cfg = await createContentGeneratorConfig(model, authTypeEnum);
+  modelName = cfg.model;
   console.log(`Gemini CLI returned model: ${modelName}`);
 
   return await createContentGenerator(cfg);
@@ -41,50 +34,41 @@ const generatorPromise = (async () => {
 /* ------------------------------------------------------------------ */
 /* 2.  Helpers consumed by server.ts                                   */
 /* ------------------------------------------------------------------ */
-type GenConfig = Record<string, unknown>;
+type GeminiReq = {
+  contents: unknown[];
+  config?: Record<string, unknown>;
+};
 
-export async function sendChat({
-  contents,
-  generationConfig = {},
-}: {
-  contents: any[];
-  generationConfig?: GenConfig;
-  tools?: unknown;                // accepted but ignored for now
-}) {
+export async function sendChat({ contents, config = {} }: GeminiReq) {
   const generator: any = await generatorPromise;
   return await generator.generateContent({
     model: modelName,
     contents,
-    config: generationConfig,
+    config,
   });
 }
 
-export async function* sendChatStream({
-  contents,
-  generationConfig = {},
-}: {
-  contents: any[];
-  generationConfig?: GenConfig;
-  tools?: unknown;
-}) {
+export async function* sendChatStream({ contents, config = {} }: GeminiReq) {
   const generator: any = await generatorPromise;
   const stream = await generator.generateContentStream({
     model: modelName,
     contents,
-    config: generationConfig,
+    config,
   });
   for await (const chunk of stream) yield chunk;
 }
 
 /* ------------------------------------------------------------------ */
-/* 3.  Minimal stubs so server.ts compiles (extend later)              */
+/* 3.  /v1/models: return the active model                             */
 /* ------------------------------------------------------------------ */
 export function listModels() {
-  return [{ 
-    id: modelName,
-    object: 'model',
-    owned_by: 'google'
-  }];
+  return [
+    {
+      id: modelName,
+      object: 'model',
+      owned_by: 'google',
+    },
+  ];
 }
 
 export function getModel() {
