@@ -302,3 +302,34 @@ test('probe: failure emits probeFailed but does not change state by itself', asy
   assert.ok(events.find((e) => e.type === 'probeFailed'));
   assert.equal(ctl.getState(), 'valid');
 });
+
+test('completeLoginWithCode: loadClientCreds throws → pending cleared, broken, loginFailed', async () => {
+  let callCount = 0;
+  const { deps, advance } = fakeDeps({
+    probeCreds: async () => ({ ok: false }),
+    loadClientCreds: async () => {
+      callCount++;
+      // Calls 1 (init probe) and 2 (startLogin) succeed; third call (completeLoginWithCode) throws.
+      if (callCount <= 2) return { clientId: 'CID', clientSecret: 'CSECRET' };
+      throw new Error('loadClientCreds exploded');
+    },
+  });
+  const ctl = createAuthController(deps);
+  const events: AuthEvent[] = [];
+  ctl.on((e) => events.push(e));
+  await ctl.init();
+  await ctl.startLogin('telegram');
+  await assert.rejects(
+    () => ctl.completeLoginWithCode('code', 'state-1'),
+    /loadClientCreds exploded/,
+  );
+  assert.equal(ctl.getState(), 'broken');
+  assert.ok(events.find((e) => e.type === 'loginFailed' && /loadClientCreds exploded/.test(e.reason)));
+
+  // CRITICAL: advance past the pending timeout; no duplicate loginFailed should fire
+  // (pending must have been cleared).
+  const beforeCount = events.filter((e) => e.type === 'loginFailed').length;
+  advance(10 * 60 * 1000 + 1);
+  const afterCount = events.filter((e) => e.type === 'loginFailed').length;
+  assert.equal(afterCount, beforeCount, 'stale timer should not fire a duplicate loginFailed');
+});

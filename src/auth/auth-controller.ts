@@ -199,6 +199,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
     dispose() {
       if (pending?.timeoutId) clearT(pending.timeoutId as Parameters<typeof clearT>[0]);
       pending = null;
+      generator = null;
       listeners.clear();
     },
     async startLogin(trigger) {
@@ -240,9 +241,10 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
       if (pending.stateToken !== stateParam) {
         throw new StateMismatchError('state token mismatch');
       }
-      const { clientId, clientSecret } = await loadClientCreds();
-      const redirectUri = `http://localhost:${deps.callbackPort}/oauth2callback`;
+      const currentPending = pending; // capture for cleanup on error
       try {
+        const { clientId, clientSecret } = await loadClientCreds();
+        const redirectUri = `http://localhost:${deps.callbackPort}/oauth2callback`;
         const { credentials, client } = await exchangeCode({ clientId, clientSecret, redirectUri, code });
         await writeCreds(credsPath, credentials);
         try {
@@ -251,7 +253,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         } catch (e) {
           logger.error('fetchAccountId failed:', e);
         }
-        clearT(pending.timeoutId as Parameters<typeof clearT>[0]);
+        clearT(currentPending.timeoutId as Parameters<typeof clearT>[0]);
         pending = null;
         snapshot.tokenExpiresAt = (credentials as { expiry_date?: number })?.expiry_date;
         snapshot.hasRefreshToken = !!(credentials as { refresh_token?: string })?.refresh_token;
@@ -259,11 +261,16 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         setState('valid', 'login completed');
         emit({ type: 'loginCompleted' });
       } catch (e: unknown) {
+        // StateMismatch/NoPendingLogin are thrown above this try; any other
+        // error here (including loadClientCreds, writeCreds, exchangeCode)
+        // means the login attempt is dead — clear pending, move to broken.
         const msg = (e as Error).message ?? String(e);
         snapshot.lastFailureReason = msg;
         snapshot.lastFailureAt = now();
-        clearT(pending.timeoutId as Parameters<typeof clearT>[0]);
-        pending = null;
+        if (pending === currentPending) {
+          clearT(currentPending.timeoutId as Parameters<typeof clearT>[0]);
+          pending = null;
+        }
         setState('broken', `code exchange failed: ${msg}`);
         emit({ type: 'loginFailed', reason: msg });
         throw e;
@@ -279,8 +286,8 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         pending = null;
       }
       generator = null;
-      await deleteCreds(credsPath);
       setState('broken', 'logout');
+      await deleteCreds(credsPath);
     },
     async probe() {
       if (deps.authType !== 'oauth-personal') return { ok: true };
