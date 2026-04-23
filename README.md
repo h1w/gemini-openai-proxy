@@ -74,7 +74,14 @@ GEMINI_API_KEY=
 # Must be reachable from your browser; in Docker, map it with `-p 8085:8085`.
 OAUTH_CALLBACK_PORT=8085
 
-# Use 'gemini-2.5-flash' or 'gemini-2.5-pro'. Leave empty to let CLI choose its default model.
+# Pick one of the models available via oauth-personal (Code Assist):
+#   gemini-3.1-pro-preview
+#   gemini-3-flash-preview
+#   gemini-3.1-flash-lite-preview
+#   gemini-2.5-pro
+#   gemini-2.5-flash
+#   gemini-2.5-flash-lite
+# Leave empty to let CLI choose its default model.
 MODEL=
 ```
 
