@@ -41,6 +41,27 @@ docker build --tag "gemini-openai-proxy" .
 docker run -p 11434:80 -e GEMINI_API_KEY gemini-openai-proxy
 ```
 
+### With Docker Compose
+
+A `docker-compose.yml` is provided that reads every option from a `.env`
+file, so you don't have to repeat flags on the command line.
+
+```sh
+cp .env.example .env
+# edit .env — at minimum set AUTH_TYPE and either GEMINI_API_KEY or
+# the Telegram bot vars (for oauth-personal login)
+docker compose up -d
+```
+
+OAuth tokens are persisted in the `gemini-config` named volume so they
+survive `docker compose down` / `up` cycles. If you would rather have the
+tokens visible on the host, swap the volume line in `docker-compose.yml`
+for a bind mount such as `${HOME}/.gemini:/root/.gemini`.
+
+The compose file publishes `OAUTH_CALLBACK_PORT` (default `8085`) by
+default. If you complete login exclusively via the Telegram bot
+paste-URL flow, you can comment that port out — see below.
+
 #### Docker + `AUTH_TYPE=oauth-personal`
 
 OAuth login needs a callback URL that your browser can reach. The proxy runs
@@ -120,12 +141,23 @@ OAUTH_CALLBACK_PORT=8085
 #   gemini-2.5-flash-lite
 MODEL=
 
+# Optional override of the upstream gemini-cli OAuth client credentials.
+# Usually leave blank — the proxy reuses the client bundled with
+# @google/gemini-cli. Set both to use your own Google Cloud OAuth client.
+GEMINI_OAUTH_CLIENT_ID=
+GEMINI_OAUTH_CLIENT_SECRET=
+
+# Optional gemini-cli version used for User-Agent impersonation (default 0.39.0).
+CLI_VERSION=
+
 # --- Optional: Telegram bot (login + health monitoring) --------------------
 # Set BOTH of these to enable the bot. If either is missing the bot does not run.
 # Only messages from TELEGRAM_USER_ID are ever responded to.
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_USER_ID=
 ```
+
+See `.env.example` for the same list in a ready-to-copy format.
 
 ### Minimal curl test
 

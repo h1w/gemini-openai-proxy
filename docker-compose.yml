@@ -1,0 +1,27 @@
+services:
+  gemini-openai-proxy:
+    build: .
+    image: gemini-openai-proxy
+    container_name: gemini-openai-proxy
+    restart: unless-stopped
+    # All variables are read from .env (see .env.example).
+    # env_file both injects them into the container AND feeds the
+    # ${VAR:-default} substitutions below (Compose auto-loads .env
+    # from the project directory for its own interpolation).
+    env_file:
+      - .env
+    ports:
+      # Proxy HTTP API.
+      - "${PORT:-11434}:${PORT:-11434}"
+      # OAuth2 callback — only needed for AUTH_TYPE=oauth-personal when
+      # completing login via a browser. If you use the Telegram bot
+      # paste-URL flow you can comment this line out.
+      - "${OAUTH_CALLBACK_PORT:-8085}:${OAUTH_CALLBACK_PORT:-8085}"
+    volumes:
+      # Persist OAuth tokens between container restarts. Replace with a
+      # bind mount (e.g. "${HOME}/.gemini:/root/.gemini") if you want the
+      # tokens visible on the host.
+      - gemini-config:/root/.gemini
+
+volumes:
+  gemini-config:
