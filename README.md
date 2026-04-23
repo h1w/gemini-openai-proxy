@@ -38,6 +38,27 @@ docker build --tag "gemini-openai-proxy" .
 docker run -p 11434:80 -e GEMINI_API_KEY gemini-openai-proxy
 ```
 
+#### Docker + `AUTH_TYPE=oauth-personal`
+
+OAuth login needs a callback URL that your browser can reach. The proxy runs
+its OAuth flow on a **fixed** port (`OAUTH_CALLBACK_PORT`, default `8085`) so
+you can map it out of the container. You should also mount `~/.gemini` so the
+resulting tokens survive container restarts:
+
+```sh
+docker run \
+  -p 11434:80 \
+  -p 8085:8085 \
+  -e AUTH_TYPE=oauth-personal \
+  -v "$HOME/.gemini:/root/.gemini" \
+  gemini-openai-proxy
+```
+
+On first run, the container logs an authorization URL. Open it in a browser on
+the host, complete sign-in, and Google will redirect to
+`http://localhost:8085/oauth2callback?code=…`, which the container receives via
+the mapped port. Tokens are cached and reused on subsequent runs.
+
 ### Optional env vars
 
 ```sh
@@ -48,6 +69,10 @@ AUTH_TYPE='gemini-api-key'
 
 # API key is only used with AUTH_TYPE='gemini-api-key'
 GEMINI_API_KEY=
+
+# Fixed port for the OAuth2 callback server (only used with AUTH_TYPE='oauth-personal').
+# Must be reachable from your browser; in Docker, map it with `-p 8085:8085`.
+OAUTH_CALLBACK_PORT=8085
 
 # Use 'gemini-2.5-flash' or 'gemini-2.5-pro'. Leave empty to let CLI choose its default model.
 MODEL=

@@ -4,6 +4,7 @@ import {
   createContentGeneratorConfig,
   createContentGenerator,
 } from '@google/gemini-cli-core/dist/src/core/contentGenerator.js';
+import { ensureOauthCredentials } from './oauth-preflight';
 
 const authType = process.env.AUTH_TYPE ?? 'gemini-api-key';
 const authTypeEnum = authType as AuthType;
@@ -21,6 +22,11 @@ if (model) {
 /* ------------------------------------------------------------------ */
 let modelName: string;
 const generatorPromise = (async () => {
+  // For AUTH_TYPE='oauth-personal': run our own OAuth flow on a fixed port
+  // so it works inside Docker. No-op if credentials are already cached or
+  // if a different auth type is in use.
+  await ensureOauthCredentials();
+
   // Pass undefined for model so the helper falls back to DEFAULT_GEMINI_MODEL
   const cfg = await createContentGeneratorConfig(
     model, // let default model be used
