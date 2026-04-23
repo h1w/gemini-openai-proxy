@@ -4,14 +4,17 @@
   "main": "index.js",
   "scripts": {
     "start": "ts-node src/server.ts",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --require ts-node/register --test tests/**/*.test.ts",
+    "lint": "eslint src tests"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "@google/gemini-cli": "^0.1.5"
+    "@google/gemini-cli": "^0.1.5",
+    "google-auth-library": "^9.0.0",
+    "grammy": "^1.24.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.1",
