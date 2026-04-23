@@ -43,15 +43,34 @@ void controller.init({ autoStartLoginIfBroken: true }).catch((e) => {
 
 health.start();
 
+let callbackServer: import('http').Server | undefined;
+let telegramBot: import('./telegram/bot').TelegramBotHandle | undefined;
+
+let shutdownCalled = false;
+async function shutdown(signal: string) {
+  if (shutdownCalled) return;
+  shutdownCalled = true;
+  console.log(`Received ${signal}, shutting down`);
+  try { health.stop(); } catch (e) { console.error('health.stop:', e); }
+  try { controller.dispose(); } catch (e) { console.error('controller.dispose:', e); }
+  if (telegramBot) {
+    try { await telegramBot.stop(); } catch (e) { console.error('telegramBot.stop:', e); }
+  }
+  if (callbackServer) {
+    await new Promise<void>((resolve) => callbackServer!.close(() => resolve()));
+  }
+  process.exit(0);
+}
+process.once('SIGINT', () => void shutdown('SIGINT'));
+process.once('SIGTERM', () => void shutdown('SIGTERM'));
+
 // ---- Callback server (oauth-personal only) ----------------------------------
 if (authType === 'oauth-personal') {
   startCallbackServer({ port: CALLBACK_PORT, controller })
     .then((srv) => {
       controller.setCallbackServerReady(true);
       console.log(`OAuth callback server on http://localhost:${CALLBACK_PORT}`);
-      const close = () => srv.close();
-      process.once('SIGINT', close);
-      process.once('SIGTERM', close);
+      callbackServer = srv;
     })
     .catch((e) => {
       controller.setCallbackServerReady(false);
@@ -77,9 +96,7 @@ if (authType === 'oauth-personal') {
       cliVersion: process.env.CLI_VERSION,
     });
     bot.start().catch((e) => console.error('telegram bot failed to start:', e));
-    const shutdown = () => { void bot.stop(); };
-    process.once('SIGINT', shutdown);
-    process.once('SIGTERM', shutdown);
+    telegramBot = bot;
   }
 }
 

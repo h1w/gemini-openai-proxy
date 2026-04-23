@@ -142,6 +142,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
   }
   let pending: Pending | null = null;
   let generator: GeneratorHandle | null = null;
+  let startLoginEpoch = 0;
 
   const listeners = new Set<(e: AuthEvent) => void>();
 
@@ -217,7 +218,19 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         pending = null;
       }
 
+      // Synchronous claim to serialize concurrent callers.
+      const myEpoch = ++startLoginEpoch;
+
       const { clientId, clientSecret } = await loadClientCreds();
+
+      // If another startLogin started while we awaited, bail without emitting.
+      if (myEpoch !== startLoginEpoch) {
+        // The other caller will (or has) set pending and emitted loginStarted.
+        // Return whichever authUrl is current if any, else an error.
+        if (pending) return { authUrl: pending.authUrl };
+        throw new Error('startLogin superseded and no pending found');
+      }
+
       const stateToken = randomState();
       const redirectUri = `http://localhost:${deps.callbackPort}/oauth2callback`;
       const authUrl = buildAuthUrl({ clientId, clientSecret, redirectUri, state: stateToken });
@@ -232,6 +245,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         }
       }, pendingTimeoutMs);
       pending = { stateToken, authUrl, startedAt, timeoutId };
+      generator = null;
       setState('pending', `login triggered by ${trigger}`);
       emit({ type: 'loginStarted', authUrl, expiresAt: startedAt + pendingTimeoutMs });
       return { authUrl };
@@ -252,6 +266,14 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
           if (id) await writeAccountId(accountIdPath, id);
         } catch (e) {
           logger.error('fetchAccountId failed:', e);
+        }
+        // Check identity BEFORE clearing pending. If logout or a newer
+        // startLogin replaced pending during the exchange, do not promote.
+        if (pending !== currentPending) {
+          // Session was cancelled (logout) or replaced (regenerate).
+          // Leave the current state untouched. Note: a newer pending still
+          // has its own timer armed; logout already moved state to broken.
+          return;
         }
         clearT(currentPending.timeoutId as Parameters<typeof clearT>[0]);
         pending = null;
@@ -281,6 +303,11 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
       await this.completeLoginWithCode(code, stateParam);
     },
     async logout() {
+      if (deps.authType !== 'oauth-personal') {
+        throw new OAuthNotSupportedError(
+          'Logout is only meaningful when AUTH_TYPE=oauth-personal',
+        );
+      }
       if (pending) {
         clearT(pending.timeoutId as Parameters<typeof clearT>[0]);
         pending = null;

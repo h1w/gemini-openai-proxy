@@ -333,3 +333,98 @@ test('completeLoginWithCode: loadClientCreds throws → pending cleared, broken,
   const afterCount = events.filter((e) => e.type === 'loginFailed').length;
   assert.equal(afterCount, beforeCount, 'stale timer should not fire a duplicate loginFailed');
 });
+
+test('startLogin: valid → pending drops cached generator (C1)', async () => {
+  let genCreateCount = 0;
+  const { deps } = fakeDeps({
+    createGenerator: async () => {
+      genCreateCount++;
+      return { generator: { fake: true, id: genCreateCount }, model: 'gemini-2.5-pro' };
+    },
+  });
+  const ctl = createAuthController(deps);
+  await ctl.init();
+  // first getGenerator creates
+  await ctl.getGenerator();
+  assert.equal(genCreateCount, 1);
+  await ctl.startLogin('telegram'); // valid → pending, should drop generator
+  // complete the login: pending → valid
+  await ctl.completeLoginWithCode('c', 'state-1');
+  // next getGenerator must call createGenerator a SECOND time
+  await ctl.getGenerator();
+  assert.equal(genCreateCount, 2, 'generator must be rebuilt after re-login');
+});
+
+test('completeLoginWithCode: concurrent startLogin does not get stomped (C2)', async () => {
+  // Orchestrate: exchangeCode for login A awaits a signal; meanwhile login B starts.
+  let resolveExchangeA: (() => void) | undefined;
+  const exchangePromise = new Promise<void>((r) => { resolveExchangeA = r; });
+
+  const { deps, advance } = fakeDeps({
+    probeCreds: async () => ({ ok: false }),
+    exchangeCode: async () => {
+      await exchangePromise;
+      return {
+        credentials: { access_token: 'a', refresh_token: 'r' },
+        client: {} as unknown as import('google-auth-library').OAuth2Client,
+      };
+    },
+  });
+  const ctl = createAuthController(deps);
+  await ctl.init();
+  await ctl.startLogin('telegram'); // state-1
+  const aPromise = ctl.completeLoginWithCode('codeA', 'state-1');
+
+  // While A is awaiting exchange, advance past debounce and start B
+  advance(6000);
+  await ctl.startLogin('telegram'); // state-2, replaces pending
+  assert.equal(ctl.getState(), 'pending');
+
+  // Now let A finish
+  resolveExchangeA!();
+  await aPromise;
+
+  // State must still be pending (B is alive), not valid
+  assert.equal(ctl.getState(), 'pending');
+});
+
+test('logout during in-flight completeLoginWithCode: final state is broken (C3)', async () => {
+  let resolveExchange: (() => void) | undefined;
+  const exchangePromise = new Promise<void>((r) => { resolveExchange = r; });
+
+  const { deps } = fakeDeps({
+    probeCreds: async () => ({ ok: false }),
+    exchangeCode: async () => {
+      await exchangePromise;
+      return {
+        credentials: { access_token: 'a', refresh_token: 'r' },
+        client: {} as unknown as import('google-auth-library').OAuth2Client,
+      };
+    },
+  });
+  const ctl = createAuthController(deps);
+  await ctl.init();
+  await ctl.startLogin('telegram');
+  const completePromise = ctl.completeLoginWithCode('code', 'state-1');
+
+  // Logout while exchange is mid-flight
+  await ctl.logout();
+  assert.equal(ctl.getState(), 'broken');
+
+  // Let the exchange finish
+  resolveExchange!();
+  await completePromise;
+
+  // State must remain broken, not flip to valid
+  assert.equal(ctl.getState(), 'broken');
+});
+
+test('logout: non-oauth-personal throws OAuthNotSupportedError (I6)', async () => {
+  const { deps } = fakeDeps({ authType: 'gemini-api-key' });
+  const ctl = createAuthController(deps);
+  await ctl.init();
+  await assert.rejects(
+    () => ctl.logout(),
+    (err: Error) => err.name === 'OAuthNotSupportedError',
+  );
+});

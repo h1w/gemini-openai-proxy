@@ -121,8 +121,12 @@ export function createTelegramBot(deps: TelegramBotDeps): TelegramBotHandle {
   bot.callbackQuery(CB.REGENERATE, async (ctx) => { await ctx.answerCallbackQuery(); await onLogin(ctx); });
 
   const onLogout = async (ctx: Context) => {
-    await deps.controller.logout();
-    await ctx.reply('🔓 Logged out. Cached credentials deleted.');
+    try {
+      await deps.controller.logout();
+      await ctx.reply('🔓 Logged out. Cached credentials deleted.');
+    } catch (e: unknown) {
+      await ctx.reply(`Cannot logout: ${(e as Error).message}`);
+    }
   };
   bot.command('logout', onLogout);
   bot.callbackQuery(CB.LOGOUT, async (ctx) => { await ctx.answerCallbackQuery(); await onLogout(ctx); });

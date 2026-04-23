@@ -21,6 +21,7 @@ async function httpGet(url: string): Promise<{ statusCode: number; location?: st
 
 test('callback-server: success redirects to SIGN_IN_SUCCESS_URL', async () => {
   const controller = {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     completeLoginWithCode: async (_code: string, _state: string) => {},
   };
   const srv = await startCallbackServer({ port: 0, controller });

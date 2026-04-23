@@ -1,4 +1,4 @@
-import type { AuthController, AuthEvent } from './auth-controller';
+import type { AuthController } from './auth-controller';
 
 export interface HealthSnapshot {
   window: { ok: number; fail: number; windowMs: number };
@@ -33,8 +33,6 @@ export interface HealthMonitorDeps {
   logger?: { log: (...a: unknown[]) => void; error: (...a: unknown[]) => void };
 }
 
-// Silence unused warning for AuthEvent re-export usage if any.
-export type _UnusedAuthEvent = AuthEvent;
 
 function looksLikeAuthError(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false;
@@ -75,6 +73,12 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
   let probeLastFailReason: string | undefined;
   let consecutiveTransportFails = 0;
 
+  const unsubscribeController = deps.controller.on((e) => {
+    if (e.type === 'stateChange' && e.to !== 'valid') {
+      consecutiveTransportFails = 0;
+    }
+  });
+
   let intervalId: ReturnType<typeof setIntervalFn> | null = null;
 
   async function runProbeTick() {
@@ -106,6 +110,7 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
   }
 
   return {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     onSuccess(_label, _latencyMs) {
       trimWin();
       win.push({ at: now(), ok: true });
@@ -167,6 +172,7 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
     },
     stop() {
       if (intervalId) { clearIntervalFn(intervalId); intervalId = null; }
+      unsubscribeController();
     },
   };
 }
