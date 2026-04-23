@@ -62,19 +62,53 @@ the host, complete sign-in, and Google will redirect to
 `http://localhost:8085/oauth2callback?code=…`, which the container receives via
 the mapped port. Tokens are cached and reused on subsequent runs.
 
+### Telegram bot for login and health monitoring
+
+Set `TELEGRAM_BOT_TOKEN` (from @BotFather) and `TELEGRAM_USER_ID` (your
+numeric Telegram user id — ask @userinfobot). If either is missing the bot
+stays disabled and the proxy behaves as before.
+
+When enabled, the bot:
+
+* Posts a Google OAuth login URL when authentication is missing or broken.
+* Lets you finish login in two ways: open the URL in a browser and let it
+  redirect to `localhost:8085`, **or** copy the URL from your browser's
+  address bar after sign-in and paste it back into the chat. In the second
+  case port 8085 does not need to be exposed at all — the proxy reads `code`
+  and `state` from the pasted URL and completes OAuth itself.
+* Runs a light 10-minute token probe and passively watches live Gemini
+  calls; if authentication breaks it posts an alert and offers a one-tap
+  Login button.
+* Exposes utility commands and inline buttons: `/login`, `/logout`,
+  `/status`, `/ping`, `/errors`, `/mute`, `/unmute`.
+
+If you use the bot you can run the container without mapping 8085:
+
+```sh
+docker run \
+  -p 11434:80 \
+  -e AUTH_TYPE=oauth-personal \
+  -e TELEGRAM_BOT_TOKEN=xxx \
+  -e TELEGRAM_USER_ID=123456789 \
+  -v "$HOME/.gemini:/root/.gemini" \
+  gemini-openai-proxy
+```
+
 ### Optional env vars
 
 ```sh
 PORT=11434
 
-# can be any of 'oauth-personal', 'gemini-api-key', 'vertex-ai'. Use oauth-personal for free access to Gemini 2.5 Pro by logging in to a Google account.
-AUTH_TYPE='gemini-api-key' 
+# can be any of 'oauth-personal', 'gemini-api-key', 'vertex-ai'.
+AUTH_TYPE='gemini-api-key'
 
-# API key is only used with AUTH_TYPE='gemini-api-key'
+# API key is only used with AUTH_TYPE='gemini-api-key' (and optionally for
+# embeddings under oauth-personal).
 GEMINI_API_KEY=
 
 # Fixed port for the OAuth2 callback server (only used with AUTH_TYPE='oauth-personal').
-# Must be reachable from your browser; in Docker, map it with `-p 8085:8085`.
+# If you only use the Telegram bot for login (see below), you do NOT have to
+# expose this port outside the container.
 OAUTH_CALLBACK_PORT=8085
 
 # Pick one of the models available via oauth-personal (Code Assist):
@@ -84,8 +118,13 @@ OAUTH_CALLBACK_PORT=8085
 #   gemini-2.5-pro
 #   gemini-2.5-flash
 #   gemini-2.5-flash-lite
-# Leave empty to let CLI choose its default model.
 MODEL=
+
+# --- Optional: Telegram bot (login + health monitoring) --------------------
+# Set BOTH of these to enable the bot. If either is missing the bot does not run.
+# Only messages from TELEGRAM_USER_ID are ever responded to.
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_USER_ID=
 ```
 
 ### Minimal curl test
