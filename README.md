@@ -14,6 +14,9 @@ Plug-and-play with clients that already speak OpenAI like SillyTavern, llama.cpp
 | Vision support | `image_url` → Gemini `inlineData` | |
 | Function / Tool calling | OpenAI `tools` + `tool_choice` → Gemini `functionDeclarations` / `toolConfig`; replies emit `tool_calls` | MCP-compatible clients work end-to-end |
 | Reasoning / chain-of-thought | `thinkingConfig.includeThoughts`, streams `<think>` chunks | ST shows grey bubbles |
+| `/v1/embeddings` | Gemini `batchEmbedContents` (default `gemini-embedding-001`) | `gemini-api-key` / `vertex-ai` → native. `oauth-personal` → needs additional `GEMINI_API_KEY` env var (Google's embed endpoint is API-key-only; user OAuth tokens are rejected on every host: cloudcode-pa, generativelanguage, Vertex AI) |
+| `/v1/models` + `/v1/models/{id}` | Active model metadata | |
+| `GET /` / `GET /health` | Simple JSON `{status:"ok"}` | For Docker/k8s probes |
 | CORS | Enabled (`*`) by default | Ready for browser apps |
 
 ---
