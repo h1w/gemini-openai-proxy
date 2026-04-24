@@ -9,7 +9,7 @@ import {
   authType,
   modelOverride,
 } from './chatwrapper';
-import { mapRequest, mapResponse, mapStreamChunks, makeStreamState } from './mapper';
+import { mapRequest, mapResponse, mapStreamChunks, makeStreamState, logStreamSummary } from './mapper';
 import { createAuthController } from './auth/auth-controller';
 import { startCallbackServer } from './auth/callback-server';
 import { createHealthMonitor } from './auth/health-monitor';
@@ -247,9 +247,19 @@ http.createServer(async (req, res) => {
             res.write(`data: ${JSON.stringify(out)}\n\n`);
           }
         }
+        logStreamSummary(state);
         res.end('data: [DONE]\n\n');
       } else {
         const gResp = await sendChat(geminiReq);
+        const cand = (gResp as { candidates?: Array<{ content?: { parts?: Array<unknown> }; finishReason?: string }>; promptFeedback?: { blockReason?: string } })?.candidates?.[0];
+        const partsN = cand?.content?.parts?.length ?? 0;
+        const finish = cand?.finishReason ?? 'none';
+        const block = (gResp as { promptFeedback?: { blockReason?: string } })?.promptFeedback?.blockReason;
+        if (partsN === 0) {
+          console.warn(`⚠ empty response: finish=${finish}${block ? ` block=${block}` : ''}`);
+        } else {
+          console.log(`✓ response: finish=${finish} parts=${partsN}`);
+        }
         const mapped = mapResponse(gResp);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(mapped));

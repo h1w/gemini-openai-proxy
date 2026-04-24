@@ -470,6 +470,10 @@ export type StreamState = {
   toolCallIndex: number;
   inThink: boolean;
   roleEmitted: boolean;
+  emittedContent: boolean;
+  emittedToolCalls: boolean;
+  lastFinishReason?: string;
+  lastBlockReason?: string;
 };
 
 export function makeStreamState(): StreamState {
@@ -479,7 +483,23 @@ export function makeStreamState(): StreamState {
     toolCallIndex: 0,
     inThink: false,
     roleEmitted: false,
+    emittedContent: false,
+    emittedToolCalls: false,
   };
+}
+
+export function logStreamSummary(state: StreamState): void {
+  const parts = [
+    `finish=${state.lastFinishReason ?? 'none'}`,
+    `tool_calls=${state.toolCallIndex}`,
+    `has_content=${state.emittedContent}`,
+  ];
+  if (state.lastBlockReason) parts.push(`block=${state.lastBlockReason}`);
+  if (!state.emittedContent && state.toolCallIndex === 0) {
+    console.warn(`⚠ empty response: ${parts.join(' ')}`);
+  } else {
+    console.log(`✓ stream done: ${parts.join(' ')}`);
+  }
 }
 
 function emptyDeltaChunk(state: StreamState, model: string, delta: any, finish?: string | null) {
@@ -503,6 +523,8 @@ export function mapStreamChunks(chunk: any, state: StreamState): any[] {
   const out: any[] = [];
   const candidate = chunk?.candidates?.[0];
   const parts: any[] = candidate?.content?.parts ?? [];
+  const blockReason = chunk?.promptFeedback?.blockReason;
+  if (blockReason) state.lastBlockReason = String(blockReason);
 
   if (!state.roleEmitted && parts.length > 0) {
     out.push(emptyDeltaChunk(state, model, { role: 'assistant', content: '' }));
@@ -536,6 +558,7 @@ export function mapStreamChunks(chunk: any, state: StreamState): any[] {
         }),
       );
       state.toolCallIndex++;
+      state.emittedToolCalls = true;
     } else if (typeof p.text === 'string') {
       if (p.thought === true) {
         const prefix = state.inThink ? '' : '<think>';
@@ -545,12 +568,14 @@ export function mapStreamChunks(chunk: any, state: StreamState): any[] {
         const prefix = state.inThink ? '</think>' : '';
         state.inThink = false;
         out.push(emptyDeltaChunk(state, model, { content: prefix + p.text }));
+        if (p.text.length > 0) state.emittedContent = true;
       }
     }
   }
 
   const finishReason = candidate?.finishReason;
   if (finishReason) {
+    state.lastFinishReason = String(finishReason);
     if (state.inThink) {
       out.push(emptyDeltaChunk(state, model, { content: '</think>' }));
       state.inThink = false;
