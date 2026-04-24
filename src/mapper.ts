@@ -238,6 +238,44 @@ export async function mapRequest(body: any) {
     // unknown role: ignore
   }
 
+  // Fallback: strip orphan functionCall/functionResponse pairs whose
+  // thoughtSignature we could not recover (cold cache, client-rewritten id,
+  // pre-restart history). Gemini 3.x rejects such replays; replace them with
+  // plain-text breadcrumbs so the conversation can continue.
+  //
+  // A fc is "orphan" only if it has no sig AND there is at least one later
+  // turn in the history — i.e. it is not the currently-pending call.
+  for (let i = 0; i < contents.length; i++) {
+    const c = contents[i];
+    if (c.role !== 'model') continue;
+    const isLastTurn = i === contents.length - 1;
+    c.parts = c.parts.map((p) => {
+      if (!p.functionCall) return p;
+      if (p.thoughtSignature) return p;
+      if (isLastTurn) return p; // pending call, leave intact
+      const args = JSON.stringify(p.functionCall.args ?? {});
+      return { text: `[tool call: ${p.functionCall.name}(${args})]` };
+    });
+  }
+  for (let i = 0; i < contents.length; i++) {
+    const c = contents[i];
+    if (c.role !== 'user') continue;
+    const isLastTurn = i === contents.length - 1;
+    c.parts = c.parts.map((p) => {
+      if (!p.functionResponse) return p;
+      // Keep the fr intact only if the immediately preceding model turn
+      // still carries a functionCall with that name (matching a kept fc).
+      const prev = contents[i - 1];
+      const prevHasFc =
+        prev?.role === 'model' &&
+        prev.parts.some((pp) => pp.functionCall?.name === p.functionResponse?.name);
+      if (prevHasFc) return p;
+      if (isLastTurn) return p;
+      const resp = JSON.stringify(p.functionResponse.response ?? {});
+      return { text: `[tool result: ${p.functionResponse.name} → ${resp}]` };
+    });
+  }
+
   // Gemini requires contents to start with a user turn; prepend a stub if needed.
   if (contents.length === 0 || contents[0].role !== 'user') {
     contents.unshift({ role: 'user', parts: [{ text: '' }] });
