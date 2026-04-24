@@ -39,6 +39,33 @@ function encodeToolCallId(
   return geminiId || `call_${created}_${fallbackIndex}`;
 }
 
+/* Signature fallback cache: clients that drop `gfc_`-prefixed tool_call.id   */
+/* (Gemini CLI, some OpenAI-compat clients) can still replay history, because */
+/* signatures are looked up by (name + stringified args).                     */
+const SIG_CACHE_MAX = 2000;
+const SIG_CACHE_TTL_MS = 60 * 60 * 1000;
+const sigCacheStore = new Map<string, { sig: string; exp: number }>();
+function sigKey(name: string, args: Record<string, unknown>): string {
+  try { return `${name}\x00${JSON.stringify(args)}`; } catch { return `${name}\x00`; }
+}
+const sigCache = {
+  get(key: string): string | undefined {
+    const e = sigCacheStore.get(key);
+    if (!e) return undefined;
+    if (e.exp < Date.now()) { sigCacheStore.delete(key); return undefined; }
+    sigCacheStore.delete(key); sigCacheStore.set(key, e); // LRU bump
+    return e.sig;
+  },
+  set(key: string, sig: string): void {
+    if (!sig) return;
+    if (sigCacheStore.size >= SIG_CACHE_MAX) {
+      const oldest = sigCacheStore.keys().next().value;
+      if (oldest) sigCacheStore.delete(oldest);
+    }
+    sigCacheStore.set(key, { sig, exp: Date.now() + SIG_CACHE_TTL_MS });
+  },
+};
+
 function decodeThoughtSignature(id: string | undefined): string | undefined {
   if (!id || !id.startsWith(SIG_ID_PREFIX)) return undefined;
   const body = id.slice(SIG_ID_PREFIX.length)
@@ -175,12 +202,17 @@ export async function mapRequest(body: any) {
       for (const tc of toolCalls) {
         const name = tc?.function?.name;
         if (!name) continue;
-        const sig = decodeThoughtSignature(tc.id);
+        const args = parseJsonSafe(tc.function?.arguments);
+        let sig = decodeThoughtSignature(tc.id);
+        if (!sig) sig = sigCache.get(sigKey(name, args));
+        console.log(
+          `  ↳ tool_call replay name=${name} id=${String(tc.id).slice(0, 12)} sig=${sig ? 'RECOVERED' : 'MISSING'}`,
+        );
         const part: Part = {
           functionCall: {
             id: sig ? undefined : tc.id,
             name,
-            args: parseJsonSafe(tc.function?.arguments),
+            args,
           },
         };
         if (sig) part.thoughtSignature = sig;
@@ -342,6 +374,9 @@ export function mapResponse(gResp: any) {
 
   for (const p of parts) {
     if (p.functionCall) {
+      if (p.thoughtSignature) {
+        sigCache.set(sigKey(p.functionCall.name ?? '', p.functionCall.args ?? {}), p.thoughtSignature);
+      }
       const id = encodeToolCallId(p.functionCall.id, p.thoughtSignature, toolCounter, now);
       toolCalls.push({
         id,
@@ -438,6 +473,9 @@ export function mapStreamChunks(chunk: any, state: StreamState): any[] {
 
   for (const p of parts) {
     if (p.functionCall) {
+      if (p.thoughtSignature) {
+        sigCache.set(sigKey(p.functionCall.name ?? '', p.functionCall.args ?? {}), p.thoughtSignature);
+      }
       const id = encodeToolCallId(
         p.functionCall.id,
         p.thoughtSignature,
