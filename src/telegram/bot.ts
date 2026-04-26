@@ -143,8 +143,14 @@ export function createTelegramBot(deps: TelegramBotDeps): TelegramBotHandle {
   bot.callbackQuery(CB.AUTH_STATUS, async (ctx) => { await ctx.answerCallbackQuery(); await onAuthStatus(ctx); });
 
   const onPing = async (ctx: Context) => {
-    await ctx.reply('🩺 Pinging Gemini…');
-    const r = await deps.health.pingGemini();
+    const models = deps.controller.getSnapshot().models;
+    const pingModel = models && models.length > 0 ? models[0] : undefined;
+    if (!pingModel) {
+      await ctx.reply('❌ Ping unavailable: no models configured (set MODEL=)');
+      return;
+    }
+    await ctx.reply(`🩺 Pinging Gemini (${pingModel})…`);
+    const r = await deps.health.pingGemini(pingModel);
     if (r.ok) await ctx.reply(`✅ Ping ok (${r.latencyMs} ms)`);
     else await ctx.reply(`❌ Ping failed: ${r.error}`);
   };

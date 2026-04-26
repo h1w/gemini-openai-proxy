@@ -20,10 +20,55 @@ console.log(
 export type AuthType = 'oauth-personal' | 'gemini-api-key' | 'vertex-ai';
 
 export const authType = (process.env.AUTH_TYPE ?? 'gemini-api-key') as AuthType;
-export const modelOverride = process.env.MODEL ?? undefined;
 
-if (modelOverride) console.log(`Model override: ${modelOverride}`);
+// Default whitelist mirrors the Code Assist (oauth-personal) catalog from README.
+// Used when MODEL is unset / empty.
+const DEFAULT_MODEL_WHITELIST: readonly string[] = [
+  'gemini-3.1-pro-preview',
+  'gemini-3-flash-preview',
+  'gemini-3.1-flash-lite-preview',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+];
+
+function parseModelWhitelist(raw: string | undefined): string[] {
+  if (!raw) return [...DEFAULT_MODEL_WHITELIST];
+  // Accept any combination of commas, whitespace, or newlines as separators.
+  // Lets users write MODEL as a single line (`a,b,c`), space-separated
+  // (`a b c`), or as a multi-line .env value:
+  //     MODEL="
+  //     gemini-2.5-pro
+  //     gemini-2.5-flash
+  //     "
+  const parts = raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (parts.length === 0) return [...DEFAULT_MODEL_WHITELIST];
+  // Dedupe while preserving order.
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of parts) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+export const modelWhitelist: readonly string[] = parseModelWhitelist(process.env.MODEL);
+
+console.log(`Model whitelist (${modelWhitelist.length}): ${modelWhitelist.join(', ')}`);
 console.log(`Auth type: ${authType}`);
+
+export function getModelWhitelist(): readonly string[] {
+  return modelWhitelist;
+}
+
+export function isModelAllowed(model: string): boolean {
+  return modelWhitelist.includes(model);
+}
 
 // Injected at bootstrap from server.ts.
 let _controller: AuthController | null = null;
@@ -43,8 +88,6 @@ function hm(): HealthMonitor {
   return _health;
 }
 
-const DEFAULT_MODEL = 'gemini-2.5-pro';
-
 async function buildOAuthClient(): Promise<OAuth2Client> {
   const { clientId, clientSecret } = await loadUpstreamOauthClientCredentials();
   const creds = await readCachedCredentials(getCachedCredentialPath());
@@ -57,22 +100,23 @@ async function buildOAuthClient(): Promise<OAuth2Client> {
 }
 
 // Factory passed INTO the controller so it owns generator lifecycle.
+// `model` is required — caller picks the model per-request from the whitelist.
 export async function defaultCreateGenerator(
   at: string,
-  model?: string,
+  model: string,
 ): Promise<GeneratorHandle> {
   if (at !== 'oauth-personal') {
     throw new Error(
       `AUTH_TYPE=${at} is not supported in this build — use oauth-personal`,
     );
   }
-  const resolvedModel = model ?? DEFAULT_MODEL;
   const oauth = await buildOAuthClient();
-  const client = new CodeAssistClient({ oauth, model: resolvedModel });
-  return { generator: client as unknown, model: resolvedModel };
+  const client = new CodeAssistClient({ oauth, model });
+  return { generator: client as unknown, model };
 }
 
 type GeminiReq = {
+  model: string;
   contents: Array<{ role: 'user' | 'model'; parts: Array<Record<string, unknown>> }>;
   config?: Record<string, unknown>;
 };
@@ -115,16 +159,16 @@ async function instrumented<T>(label: string, fn: () => Promise<T>): Promise<T> 
   }
 }
 
-export async function sendChat({ contents, config = {} }: GeminiReq) {
-  const { generator, model } = await ctl().getGenerator();
+export async function sendChat({ model, contents, config = {} }: GeminiReq) {
+  const { generator } = await ctl().getGenerator(model);
   const client = generator as CodeAssistClient;
   return instrumented('chat', () =>
     withRetry('sendChat', () => client.generateContent({ model, contents, config })),
   );
 }
 
-export async function* sendChatStream({ contents, config = {} }: GeminiReq) {
-  const { generator, model } = await ctl().getGenerator();
+export async function* sendChatStream({ model, contents, config = {} }: GeminiReq) {
+  const { generator } = await ctl().getGenerator(model);
   const client = generator as CodeAssistClient;
   const started = Date.now();
   let failed = false;
@@ -201,11 +245,5 @@ export async function embedContent({
 }
 
 export function listModels() {
-  const snap = _controller?.getSnapshot();
-  const id = snap?.model ?? modelOverride ?? DEFAULT_MODEL;
-  return [{ id, object: 'model', owned_by: 'google' }];
-}
-
-export function getModel() {
-  return _controller?.getSnapshot().model ?? modelOverride ?? DEFAULT_MODEL;
+  return modelWhitelist.map((id) => ({ id, object: 'model', owned_by: 'google' }));
 }

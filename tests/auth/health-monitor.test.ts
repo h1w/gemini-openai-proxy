@@ -127,7 +127,7 @@ test('active probe skipped when state is not valid', async () => {
 test('pingGemini: happy path returns ok + latency', async () => {
   const { deps } = fakeDeps();
   const mon = createHealthMonitor(deps);
-  const r = await mon.pingGemini();
+  const r = await mon.pingGemini('gemini-2.5-pro');
   assert.equal(r.ok, true);
   assert.equal(typeof r.latencyMs, 'number');
 });
@@ -143,7 +143,7 @@ test('pingGemini: generator throws → ok=false', async () => {
     },
   });
   const mon = createHealthMonitor(deps);
-  const r = await mon.pingGemini();
+  const r = await mon.pingGemini('gemini-2.5-pro');
   assert.equal(r.ok, false);
   assert.match(r.error ?? '', /broken/);
 });

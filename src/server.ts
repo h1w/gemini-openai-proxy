@@ -7,14 +7,14 @@ import {
   bindChatwrapper,
   defaultCreateGenerator,
   authType,
-  modelOverride,
+  modelWhitelist,
 } from './chatwrapper';
-import { mapRequest, mapResponse, mapStreamChunks, makeStreamState, logStreamSummary } from './mapper';
+import { mapRequest, mapResponse, mapStreamChunks, makeStreamState, finalUsageChunk, logStreamSummary } from './mapper';
 import { createAuthController } from './auth/auth-controller';
 import { startCallbackServer } from './auth/callback-server';
 import { createHealthMonitor } from './auth/health-monitor';
 import { createTelegramBot } from './telegram/bot';
-import { AuthBrokenError } from './auth/errors';
+import { AuthBrokenError, ModelValidationError } from './auth/errors';
 
 const PORT = Number(process.env.PORT ?? 11434);
 const CALLBACK_PORT = Number(process.env.OAUTH_CALLBACK_PORT ?? 8085);
@@ -30,7 +30,7 @@ process.on('uncaughtException', (err) => {
 const controller = createAuthController({
   authType,
   callbackPort: CALLBACK_PORT,
-  modelOverride,
+  modelWhitelist,
   createGenerator: defaultCreateGenerator,
 });
 const health = createHealthMonitor({ controller });
@@ -146,9 +146,21 @@ http.createServer(async (req, res) => {
   if (req.url?.startsWith('/v1/models/') && req.method === 'GET') {
     const requestedId = decodeURIComponent(req.url.slice('/v1/models/'.length));
     const models = listModels();
-    const found = models.find((m) => m.id === requestedId) ?? models[0];
+    const found = models.find((m) => m.id === requestedId);
+    if (!found) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        error: {
+          message: `The model '${requestedId}' does not exist`,
+          type: 'invalid_request_error',
+          param: 'model',
+          code: 'model_not_found',
+        },
+      }));
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ...found, id: requestedId }));
+    res.end(JSON.stringify(found));
     return;
   }
 
@@ -218,7 +230,7 @@ http.createServer(async (req, res) => {
       return;
     }
     try {
-      const { geminiReq } = await mapRequest(body);
+      const { geminiReq, model, includeUsage } = await mapRequest(body);
 
       const INLINE_LIMIT_BYTES = 18 * 1024 * 1024;
       let inlineBytes = 0;
@@ -241,11 +253,14 @@ http.createServer(async (req, res) => {
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
-        const state = makeStreamState();
+        const state = makeStreamState({ includeUsage });
         for await (const chunk of sendChatStream(geminiReq)) {
-          for (const out of mapStreamChunks(chunk, state)) {
+          for (const out of mapStreamChunks(chunk, state, model)) {
             res.write(`data: ${JSON.stringify(out)}\n\n`);
           }
+        }
+        if (includeUsage) {
+          res.write(`data: ${JSON.stringify(finalUsageChunk(state, model))}\n\n`);
         }
         logStreamSummary(state);
         res.end('data: [DONE]\n\n');
@@ -260,11 +275,23 @@ http.createServer(async (req, res) => {
         } else {
           console.log(`✓ response: finish=${finish} parts=${partsN}`);
         }
-        const mapped = mapResponse(gResp);
+        const mapped = mapResponse(gResp, model);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(mapped));
       }
     } catch (err: unknown) {
+      if (err instanceof ModelValidationError) {
+        res.writeHead(err.httpStatus, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: {
+            message: err.message,
+            type: 'invalid_request_error',
+            param: err.param,
+            code: err.code,
+          },
+        }));
+        return;
+      }
       if (err instanceof AuthBrokenError) {
         if (!res.headersSent) {
           res.writeHead(503, { 'Content-Type': 'application/json' });

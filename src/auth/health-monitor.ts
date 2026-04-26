@@ -15,7 +15,7 @@ export interface HealthMonitor {
   onSuccess(label: string, latencyMs: number): void;
   onFailure(label: string, err: unknown): void;
   getSnapshot(): HealthSnapshot;
-  pingGemini(): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
+  pingGemini(model: string): Promise<{ ok: boolean; latencyMs: number; error?: string }>;
   start(): void;
   stop(): void;
 }
@@ -149,10 +149,10 @@ export function createHealthMonitor(deps: HealthMonitorDeps): HealthMonitor {
         probeLastFailReason,
       };
     },
-    async pingGemini() {
+    async pingGemini(model: string) {
       const started = now();
       try {
-        const { generator } = await deps.controller.getGenerator();
+        const { generator } = await deps.controller.getGenerator(model);
         const g = generator as { countTokens: (req: unknown) => Promise<{ totalTokens?: number }> };
         await g.countTokens({
           contents: [{ role: 'user', parts: [{ text: 'ping' }] }],

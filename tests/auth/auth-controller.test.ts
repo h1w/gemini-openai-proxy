@@ -272,9 +272,8 @@ test('getGenerator: valid → returns generator with model populated', async () 
   const { deps } = fakeDeps();
   const ctl = createAuthController(deps);
   await ctl.init();
-  const g = await ctl.getGenerator();
+  const g = await ctl.getGenerator('gemini-2.5-pro');
   assert.equal(g.model, 'gemini-2.5-pro');
-  assert.equal(ctl.getSnapshot().model, 'gemini-2.5-pro');
 });
 
 test('getGenerator: broken → AuthBrokenError with hint', async () => {
@@ -282,9 +281,33 @@ test('getGenerator: broken → AuthBrokenError with hint', async () => {
   const ctl = createAuthController(deps);
   await ctl.init();
   await assert.rejects(
-    () => ctl.getGenerator(),
+    () => ctl.getGenerator('gemini-2.5-pro'),
     (err: Error) => err.name === 'AuthBrokenError',
   );
+});
+
+test('getGenerator: distinct models build distinct generators, same model is cached', async () => {
+  let genCreateCount = 0;
+  const created: string[] = [];
+  const { deps } = fakeDeps({
+    createGenerator: async (_at: string, model: string) => {
+      genCreateCount++;
+      created.push(model);
+      return { generator: { fake: true }, model };
+    },
+  });
+  const ctl = createAuthController(deps);
+  await ctl.init();
+
+  const a1 = await ctl.getGenerator('gemini-2.5-pro');
+  const a2 = await ctl.getGenerator('gemini-2.5-pro');
+  assert.equal(a1, a2, 'same model must hit the cache');
+  assert.equal(genCreateCount, 1);
+
+  const b = await ctl.getGenerator('gemini-2.5-flash');
+  assert.equal(b.model, 'gemini-2.5-flash');
+  assert.equal(genCreateCount, 2);
+  assert.deepEqual(created, ['gemini-2.5-pro', 'gemini-2.5-flash']);
 });
 
 test('probe: failure emits probeFailed but does not change state by itself', async () => {
@@ -345,13 +368,13 @@ test('startLogin: valid → pending drops cached generator (C1)', async () => {
   const ctl = createAuthController(deps);
   await ctl.init();
   // first getGenerator creates
-  await ctl.getGenerator();
+  await ctl.getGenerator('gemini-2.5-pro');
   assert.equal(genCreateCount, 1);
   await ctl.startLogin('telegram'); // valid → pending, should drop generator
   // complete the login: pending → valid
   await ctl.completeLoginWithCode('c', 'state-1');
   // next getGenerator must call createGenerator a SECOND time
-  await ctl.getGenerator();
+  await ctl.getGenerator('gemini-2.5-pro');
   assert.equal(genCreateCount, 2, 'generator must be rebuilt after re-login');
 });
 

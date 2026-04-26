@@ -56,7 +56,9 @@ export function renderAuthStatus(snap: AuthSnapshot): string {
   const parts: string[] = [];
   parts.push(`State: ${snap.state}`);
   parts.push(`Auth type: ${snap.authType}`);
-  if (snap.model) parts.push(`Model: ${snap.model}`);
+  if (snap.models && snap.models.length > 0) {
+    parts.push(`Models (${snap.models.length}): ${snap.models.join(', ')}`);
+  }
   if (snap.tokenExpiresAt) {
     const delta = Math.round((snap.tokenExpiresAt - Date.now()) / 60000);
     parts.push(`Token expires in: ${delta} min`);
@@ -95,7 +97,7 @@ export function renderInfo(auth: AuthSnapshot, extras: { proxyPort: number; call
   return [
     `CLI impersonation: ${extras.cliVersion ?? 'unknown'}`,
     `AUTH_TYPE: ${auth.authType}`,
-    `Model: ${auth.model ?? '(not initialised)'}`,
+    `Models: ${auth.models && auth.models.length > 0 ? auth.models.join(', ') : '(none configured)'}`,
     `Proxy port: ${extras.proxyPort}`,
     `Callback port: ${extras.callbackPort}`,
     `Callback server: ${auth.callbackServerReady === undefined ? 'n/a' : auth.callbackServerReady ? 'ready' : 'not bound'}`,

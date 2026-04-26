@@ -73,7 +73,7 @@ Copy `.env.example` to `.env` and edit. All values are optional unless noted.
 | `PORT` | `11434` | HTTP port the proxy listens on (host + container). |
 | `AUTH_TYPE` | `gemini-api-key` | One of `oauth-personal`, `gemini-api-key`, `vertex-ai`. Current build is tuned for `oauth-personal`. |
 | `GEMINI_API_KEY` | — | Required when `AUTH_TYPE=gemini-api-key`. Also required for `/v1/embeddings` under `oauth-personal`. |
-| `MODEL` | auto | Explicit model id. Leave blank for the default. See list below. |
+| `MODEL` | (full catalog) | Comma-separated whitelist of model ids the proxy will accept on `/v1/chat/completions`. Empty → full Code Assist catalog. The client must pick one per request via OpenAI's `model` field; values outside the whitelist are rejected with HTTP 400. See list below. |
 | `CLI_VERSION` | `0.39.1` | Gemini CLI version impersonated in the `User-Agent`. Bump to track upstream. |
 
 ### OAuth (`AUTH_TYPE=oauth-personal`)
@@ -102,6 +102,13 @@ When enabled, the bot:
 
 ### Supported `MODEL` values
 
+`MODEL` is a whitelist. All ids in it become selectable per request via
+OpenAI's `model` field, and the same list is what `/v1/models` returns. The
+proxy never picks a model on the client's behalf — a missing or
+non-whitelisted `model` returns HTTP 400.
+
+Separators are flexible: commas, spaces, and newlines all work.
+
 Via `AUTH_TYPE=oauth-personal` (Code Assist):
 
 - `gemini-3.1-pro-preview`
@@ -111,7 +118,30 @@ Via `AUTH_TYPE=oauth-personal` (Code Assist):
 - `gemini-2.5-flash`
 - `gemini-2.5-flash-lite`
 
-If a preview SKU returns `MODEL_CAPACITY_EXHAUSTED` consistently, fall back to a GA model (`gemini-2.5-pro`).
+Examples (all three behave identically):
+
+```env
+# Single value — back-compat with the old setup:
+MODEL=gemini-2.5-pro
+
+# Comma-separated:
+MODEL=gemini-2.5-pro,gemini-2.5-flash,gemini-3.1-pro-preview
+
+# Multi-line list (quote the value so .env parsers keep newlines):
+MODEL="
+gemini-2.5-pro
+gemini-2.5-flash
+gemini-3.1-pro-preview
+"
+
+# Empty / unset → full catalog above.
+MODEL=
+```
+
+`docker compose` reads `.env` via `env_file:` and forwards the value to the
+container unchanged — multi-line values work as long as you keep the quotes.
+
+If a preview SKU returns `MODEL_CAPACITY_EXHAUSTED` consistently, the client should switch to a GA model (`gemini-2.5-pro`).
 
 ---
 

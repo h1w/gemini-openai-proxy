@@ -2,7 +2,8 @@
 /*  mapper.ts – OpenAI ⇆ Gemini bridge (multi-turn, tools, streaming)   */
 /* ------------------------------------------------------------------ */
 import { fetchAndEncode } from './remoteimage';
-import { getModel } from './chatwrapper';
+import { getModelWhitelist, isModelAllowed } from './chatwrapper';
+import { ModelValidationError } from './auth/errors';
 
 /* ------------------------------------------------------------------ */
 type Part = {
@@ -160,6 +161,26 @@ function buildToolCallIdToNameMap(messages: any[]): Map<string, string> {
 /* Request mapper: OpenAI ➞ Gemini                                     */
 /* ================================================================== */
 export async function mapRequest(body: any) {
+  // Model is required and must be in the whitelist — no server-side fallback.
+  const whitelist = getModelWhitelist();
+  const requested = body?.model;
+  if (typeof requested !== 'string' || requested.length === 0) {
+    throw new ModelValidationError(
+      'model_required',
+      'model is required',
+      whitelist,
+    );
+  }
+  if (!isModelAllowed(requested)) {
+    throw new ModelValidationError(
+      'model_not_found',
+      `The model \`${requested}\` does not exist or you do not have access to it.`,
+      whitelist,
+      requested,
+    );
+  }
+  const model = requested;
+
   const messages: any[] = Array.isArray(body.messages) ? body.messages : [];
   const idToName = buildToolCallIdToNameMap(messages);
 
@@ -342,7 +363,12 @@ export async function mapRequest(body: any) {
     config.thinkingConfig = { includeThoughts: true, thinkingBudget: budget };
   }
 
-  const geminiReq = { contents, config };
+  const geminiReq = { model, contents, config };
+
+  // OpenAI streaming: when stream_options.include_usage=true, every chunk
+  // carries `usage: null` and a final empty-choices chunk carries the usage
+  // totals before [DONE]. Default off.
+  const includeUsage = body?.stream_options?.include_usage === true;
 
   // Brief summary for logs
   const summary = contents.map((c) => {
@@ -357,9 +383,9 @@ export async function mapRequest(body: any) {
   });
   const toolsCount =
     (config.tools as any[] | undefined)?.[0]?.functionDeclarations?.length ?? 0;
-  console.log(`➜ mapped: ${summary.join(' → ')} | tools=${toolsCount}`);
+  console.log(`➜ mapped: model=${model} ${summary.join(' → ')} | tools=${toolsCount}`);
 
-  return { geminiReq };
+  return { geminiReq, model, includeUsage };
 }
 
 /* ================================================================== */
@@ -391,7 +417,7 @@ function mapFinishReason(
 /* ================================================================== */
 /* Non-stream response: Gemini ➞ OpenAI                                */
 /* ================================================================== */
-export function mapResponse(gResp: any) {
+export function mapResponse(gResp: any, model: string) {
   const usage = gResp?.usageMetadata ?? {};
   const candidate = gResp?.candidates?.[0];
 
@@ -444,7 +470,7 @@ export function mapResponse(gResp: any) {
     id: `chatcmpl-${Date.now()}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: getModel(),
+    model,
     choices: [
       {
         index: 0,
@@ -464,6 +490,12 @@ export function mapResponse(gResp: any) {
 /* ================================================================== */
 /* Stream chunk mapper: Gemini ➞ OpenAI                                */
 /* ================================================================== */
+export type StreamUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
 export type StreamState = {
   id: string;
   created: number;
@@ -474,9 +506,11 @@ export type StreamState = {
   emittedToolCalls: boolean;
   lastFinishReason?: string;
   lastBlockReason?: string;
+  includeUsage: boolean;
+  lastUsage?: StreamUsage;
 };
 
-export function makeStreamState(): StreamState {
+export function makeStreamState(opts: { includeUsage?: boolean } = {}): StreamState {
   return {
     id: `chatcmpl-${Date.now()}`,
     created: Math.floor(Date.now() / 1000),
@@ -485,6 +519,7 @@ export function makeStreamState(): StreamState {
     roleEmitted: false,
     emittedContent: false,
     emittedToolCalls: false,
+    includeUsage: opts.includeUsage === true,
   };
 }
 
@@ -503,7 +538,7 @@ export function logStreamSummary(state: StreamState): void {
 }
 
 function emptyDeltaChunk(state: StreamState, model: string, delta: any, finish?: string | null) {
-  return {
+  const out: Record<string, unknown> = {
     id: state.id,
     object: 'chat.completion.chunk',
     created: state.created,
@@ -516,15 +551,43 @@ function emptyDeltaChunk(state: StreamState, model: string, delta: any, finish?:
       },
     ],
   };
+  // OpenAI compat: when include_usage is on, every intermediate chunk
+  // carries `usage: null`; the final usage chunk carries the totals.
+  if (state.includeUsage) out.usage = null;
+  return out;
 }
 
-export function mapStreamChunks(chunk: any, state: StreamState): any[] {
-  const model = getModel();
+export function finalUsageChunk(state: StreamState, model: string): any {
+  const u = state.lastUsage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  return {
+    id: state.id,
+    object: 'chat.completion.chunk',
+    created: state.created,
+    model,
+    choices: [],
+    usage: u,
+  };
+}
+
+function readUsage(chunk: any): StreamUsage | undefined {
+  const u = chunk?.usageMetadata;
+  if (!u) return undefined;
+  const prompt = u.promptTokenCount ?? u.promptTokens ?? 0;
+  const completion = u.candidatesTokenCount ?? u.candidatesTokens ?? 0;
+  const total = u.totalTokenCount ?? u.totalTokens ?? prompt + completion;
+  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
+}
+
+export function mapStreamChunks(chunk: any, state: StreamState, model: string): any[] {
   const out: any[] = [];
   const candidate = chunk?.candidates?.[0];
   const parts: any[] = candidate?.content?.parts ?? [];
   const blockReason = chunk?.promptFeedback?.blockReason;
   if (blockReason) state.lastBlockReason = String(blockReason);
+
+  // Track running usage from every chunk Gemini sends — last value wins.
+  const u = readUsage(chunk);
+  if (u) state.lastUsage = u;
 
   if (!state.roleEmitted && parts.length > 0) {
     out.push(emptyDeltaChunk(state, model, { role: 'assistant', content: '' }));

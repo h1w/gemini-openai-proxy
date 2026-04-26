@@ -36,7 +36,7 @@ export type AuthEvent =
 export interface AuthSnapshot {
   state: AuthState;
   authType: string;
-  model?: string;
+  models?: readonly string[];
   tokenExpiresAt?: number;
   hasRefreshToken?: boolean;
   lastSuccessAt?: number;
@@ -55,7 +55,7 @@ export interface GeneratorHandle {
 export interface AuthControllerDeps {
   authType: string;
   callbackPort: number;
-  modelOverride?: string;
+  modelWhitelist?: readonly string[];
   pendingTimeoutMs?: number;
   debounceMs?: number;
   now?: () => number;
@@ -64,7 +64,7 @@ export interface AuthControllerDeps {
   loadClientCreds?: () => Promise<{ clientId: string; clientSecret: string }>;
   credsPath?: string;
   accountIdPath?: string;
-  createGenerator?: (authType: string, model?: string) => Promise<GeneratorHandle>;
+  createGenerator?: (authType: string, model: string) => Promise<GeneratorHandle>;
   buildAuthUrl?: (args: {
     clientId: string;
     clientSecret: string;
@@ -100,7 +100,7 @@ export interface AuthController {
   logout(): Promise<void>;
   probe(): Promise<{ ok: boolean; reason?: string }>;
   reportAuthFailure(err: unknown): void;
-  getGenerator(): Promise<GeneratorHandle>;
+  getGenerator(model: string): Promise<GeneratorHandle>;
   on(listener: (e: AuthEvent) => void): () => void;
   init(options?: { autoStartLoginIfBroken?: boolean }): Promise<void>;
   dispose(): void;
@@ -131,7 +131,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
   const snapshot: AuthSnapshot = {
     state,
     authType: deps.authType,
-    model: deps.modelOverride,
+    models: deps.modelWhitelist,
   };
 
   interface Pending {
@@ -141,7 +141,8 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
     timeoutId: unknown;
   }
   let pending: Pending | null = null;
-  let generator: GeneratorHandle | null = null;
+  // Per-model generator pool. Re-created on auth failure / re-login.
+  const generators: Map<string, GeneratorHandle> = new Map();
   let startLoginEpoch = 0;
 
   const listeners = new Set<(e: AuthEvent) => void>();
@@ -200,7 +201,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
     dispose() {
       if (pending?.timeoutId) clearT(pending.timeoutId as Parameters<typeof clearT>[0]);
       pending = null;
-      generator = null;
+      generators.clear();
       listeners.clear();
     },
     async startLogin(trigger) {
@@ -245,7 +246,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         }
       }, pendingTimeoutMs);
       pending = { stateToken, authUrl, startedAt, timeoutId };
-      generator = null;
+      generators.clear();
       setState('pending', `login triggered by ${trigger}`);
       emit({ type: 'loginStarted', authUrl, expiresAt: startedAt + pendingTimeoutMs });
       return { authUrl };
@@ -312,7 +313,7 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
         clearT(pending.timeoutId as Parameters<typeof clearT>[0]);
         pending = null;
       }
-      generator = null;
+      generators.clear();
       setState('broken', 'logout');
       await deleteCreds(credsPath);
     },
@@ -335,12 +336,12 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
       const msg = (err as Error)?.message ?? String(err);
       snapshot.lastFailureReason = msg;
       snapshot.lastFailureAt = now();
-      generator = null;
+      generators.clear();
       if (state === 'valid') {
         setState('broken', `auth failure: ${msg}`);
       }
     },
-    async getGenerator() {
+    async getGenerator(model: string) {
       if (state !== 'valid') {
         throw new AuthBrokenError(
           'Gemini auth is not active',
@@ -349,13 +350,16 @@ export function createAuthController(deps: AuthControllerDeps): AuthController {
             : 'check AUTH_TYPE / GEMINI_API_KEY',
         );
       }
-      if (!generator) {
-        if (!createGeneratorFn) throw new Error('createGenerator dep not provided');
-        generator = await createGeneratorFn(deps.authType, deps.modelOverride);
-        snapshot.model = generator.model;
-        snapshot.lastSuccessAt = now();
+      if (!model || typeof model !== 'string') {
+        throw new Error('getGenerator: model is required');
       }
-      return generator;
+      const cached = generators.get(model);
+      if (cached) return cached;
+      if (!createGeneratorFn) throw new Error('createGenerator dep not provided');
+      const handle = await createGeneratorFn(deps.authType, model);
+      generators.set(model, handle);
+      snapshot.lastSuccessAt = now();
+      return handle;
     },
   };
 }

@@ -29,3 +29,24 @@ export class InvalidCallbackUrlError extends Error {
 export class OAuthNotSupportedError extends Error {
   readonly name = 'OAuthNotSupportedError';
 }
+
+export class ModelValidationError extends Error {
+  readonly name = 'ModelValidationError';
+  readonly httpStatus = 400;
+  readonly param = 'model';
+  readonly code: 'model_required' | 'model_not_found';
+  readonly allowed: readonly string[];
+  readonly requested?: string;
+
+  constructor(
+    code: 'model_required' | 'model_not_found',
+    message: string,
+    allowed: readonly string[],
+    requested?: string,
+  ) {
+    super(message);
+    this.code = code;
+    this.allowed = allowed;
+    this.requested = requested;
+  }
+}
