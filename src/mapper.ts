@@ -357,7 +357,13 @@ export async function mapRequest(body: any) {
   if (toolConfig) config.toolConfig = toolConfig;
 
   // Thinking / reasoning
-  if (body.include_reasoning === true || body.reasoning_effort) {
+  // Gemini 3.x is a thinking model — it returns thought parts even when
+  // includeThoughts is unset. We mirror OpenAI's default behavior: hide
+  // thoughts unless the client explicitly opted in via `include_reasoning`
+  // or `reasoning_effort`. The flag is also passed through to mapResponse /
+  // mapStreamChunks so they know whether to surface the `<think>` block.
+  const includeReasoning = body.include_reasoning === true || !!body.reasoning_effort;
+  if (includeReasoning) {
     const budget =
       typeof body.thinking_budget === 'number'
         ? body.thinking_budget
@@ -367,6 +373,10 @@ export async function mapRequest(body: any) {
             ? 8192
             : 2048;
     config.thinkingConfig = { includeThoughts: true, thinkingBudget: budget };
+  } else {
+    // Tell Gemini not to bother returning thought summaries; it still
+    // thinks internally but the response payload stays clean.
+    config.thinkingConfig = { includeThoughts: false };
   }
 
   const geminiReq = { model, contents, config };
@@ -391,7 +401,7 @@ export async function mapRequest(body: any) {
     (config.tools as any[] | undefined)?.[0]?.functionDeclarations?.length ?? 0;
   console.log(`➜ mapped: model=${model} ${summary.join(' → ')} | tools=${toolsCount}`);
 
-  return { geminiReq, model, includeUsage };
+  return { geminiReq, model, includeUsage, includeReasoning };
 }
 
 /* ================================================================== */
@@ -423,7 +433,12 @@ function mapFinishReason(
 /* ================================================================== */
 /* Non-stream response: Gemini ➞ OpenAI                                */
 /* ================================================================== */
-export function mapResponse(gResp: any, model: string) {
+export function mapResponse(
+  gResp: any,
+  model: string,
+  opts: { includeReasoning?: boolean } = {},
+) {
+  const includeReasoning = opts.includeReasoning === true;
   const usage = gResp?.usageMetadata ?? {};
   const candidate = gResp?.candidates?.[0];
 
@@ -458,8 +473,12 @@ export function mapResponse(gResp: any, model: string) {
       });
       toolCounter++;
     } else if (typeof p.text === 'string') {
-      if (p.thought === true) thoughtText += p.text;
-      else contentText += p.text;
+      if (p.thought === true) {
+        if (includeReasoning) thoughtText += p.text;
+        // else: drop silently — match OpenAI default UX
+      } else {
+        contentText += p.text;
+      }
     }
   }
 
@@ -513,10 +532,13 @@ export type StreamState = {
   lastFinishReason?: string;
   lastBlockReason?: string;
   includeUsage: boolean;
+  includeReasoning: boolean;
   lastUsage?: StreamUsage;
 };
 
-export function makeStreamState(opts: { includeUsage?: boolean } = {}): StreamState {
+export function makeStreamState(
+  opts: { includeUsage?: boolean; includeReasoning?: boolean } = {},
+): StreamState {
   return {
     id: `chatcmpl-${Date.now()}`,
     created: Math.floor(Date.now() / 1000),
@@ -526,6 +548,7 @@ export function makeStreamState(opts: { includeUsage?: boolean } = {}): StreamSt
     emittedContent: false,
     emittedToolCalls: false,
     includeUsage: opts.includeUsage === true,
+    includeReasoning: opts.includeReasoning === true,
   };
 }
 
@@ -630,6 +653,7 @@ export function mapStreamChunks(chunk: any, state: StreamState, model: string): 
       state.emittedToolCalls = true;
     } else if (typeof p.text === 'string') {
       if (p.thought === true) {
+        if (!state.includeReasoning) continue; // match OpenAI default UX
         const prefix = state.inThink ? '' : '<think>';
         state.inThink = true;
         out.push(emptyDeltaChunk(state, model, { content: prefix + p.text }));

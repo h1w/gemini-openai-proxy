@@ -230,7 +230,7 @@ http.createServer(async (req, res) => {
       return;
     }
     try {
-      const { geminiReq, model, includeUsage } = await mapRequest(body);
+      const { geminiReq, model, includeUsage, includeReasoning } = await mapRequest(body);
 
       const INLINE_LIMIT_BYTES = 18 * 1024 * 1024;
       let inlineBytes = 0;
@@ -253,7 +253,7 @@ http.createServer(async (req, res) => {
           'Cache-Control': 'no-cache',
           Connection: 'keep-alive',
         });
-        const state = makeStreamState({ includeUsage });
+        const state = makeStreamState({ includeUsage, includeReasoning });
         for await (const chunk of sendChatStream(geminiReq)) {
           for (const out of mapStreamChunks(chunk, state, model)) {
             res.write(`data: ${JSON.stringify(out)}\n\n`);
@@ -275,7 +275,7 @@ http.createServer(async (req, res) => {
         } else {
           console.log(`✓ response: finish=${finish} parts=${partsN}`);
         }
-        const mapped = mapResponse(gResp, model);
+        const mapped = mapResponse(gResp, model, { includeReasoning });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(mapped));
       }
