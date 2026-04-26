@@ -92,9 +92,15 @@ type OpenAIToolCall = {
 /* ================================================================== */
 function parseJsonSafe(raw: unknown): Record<string, unknown> {
   if (raw === null || raw === undefined || raw === '') return {};
+  // Gemini's functionResponse.response and functionCall.args are non-repeating
+  // STRUCT fields — passing an array or scalar there fails wire validation
+  // with "Proto field is not repeating, cannot start list". Wrap anything
+  // that is not a plain object so the response is always a struct.
+  if (Array.isArray(raw)) return { value: raw };
   if (typeof raw === 'object') return raw as Record<string, unknown>;
   try {
     const v = JSON.parse(String(raw));
+    if (Array.isArray(v)) return { value: v };
     return typeof v === 'object' && v !== null ? v : { value: v };
   } catch {
     return { value: String(raw) };
